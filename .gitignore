@@ -31,6 +31,7 @@ e2e-logs/
 kubeconfig*
 *.tgz
 e2e/kpulse.nar
+e2e/e2e-client/
 
 # Local scratch and generated files must not be committed.
 *.tmp

@@ -5,8 +5,10 @@ cd "$(dirname "$0")/.."
 
 CLUSTER="${CLUSTER:-kpulse-e2e-local}"
 
-./gradlew :kpulse-protocol-handler:nar --console=plain
+./gradlew :kpulse-protocol-handler:nar :e2e-client:installDist --console=plain
 cp kpulse-protocol-handler/build/libs/kpulse-protocol-handler-*.nar e2e/kpulse.nar
+rm -rf e2e/e2e-client
+cp -r e2e-client/build/install/e2e-client e2e/e2e-client
 docker build -t kpulse-broker:e2e e2e
 
 kind create cluster --name "${CLUSTER}" 2>/dev/null || echo "cluster ${CLUSTER} already exists"
