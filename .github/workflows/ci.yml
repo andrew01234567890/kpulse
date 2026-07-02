@@ -20,9 +20,6 @@ jobs:
   version:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read # for the commit -> associated-PR lookup
     outputs:
       next: ${{ steps.compute.outputs.next }}
     steps:
@@ -31,8 +28,6 @@ jobs:
           fetch-depth: 0
       - id: compute
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -44,11 +39,14 @@ jobs:
             echo "next=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Bump level is authoritative from the merged PR's title; direct commits never release.
-          pr_title=$(gh api "repos/${REPO}/commits/${SHA}/pulls" --jq '.[0].title // ""')
-          bump=$(printf '%s' "${pr_title}" | sed -nE 's/^\[(major|minor|patch)\].*/\1/p')
+          # The repo is squash-only with PR-title-as-commit-subject, so the merged PR's [bump]
+          # prefix is read straight from the commit subject. (The commits/{sha}/pulls API is
+          # eventually consistent and returned empty right after a merge, silently skipping
+          # releases.) Direct commits carry no prefix and never release.
+          subject=$(git log -1 --format=%s "${SHA}")
+          bump=$(printf '%s' "${subject}" | sed -nE 's/^\[(major|minor|patch)\].*/\1/p')
           if [ -z "${bump}" ]; then
-            echo "No [major|minor|patch] bump in \"${pr_title}\" — no release."
+            echo "No [major|minor|patch] bump in \"${subject}\" — no release."
             echo "next=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
