@@ -27,7 +27,10 @@ public class KafkaProtocolHandler implements ProtocolHandler {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaProtocolHandler.class);
 
+    private static final String DEFAULT_CLUSTER_ID = "kpulse";
+
     private KafkaServiceConfiguration config;
+    private KafkaRequestContext requestContext;
 
     @Override
     public String protocolName() {
@@ -56,14 +59,17 @@ public class KafkaProtocolHandler implements ProtocolHandler {
     @Override
     public void start(BrokerService service) {
         log.info("Starting kpulse Kafka protocol handler on {}", config.getKafkaListeners());
-        // Group/transaction coordinators, topic + admin managers, and auth are wired in later milestones.
+        String clusterId = service.getPulsar().getConfiguration().getClusterName();
+        this.requestContext = new KafkaRequestContext(
+            service, config, clusterId != null ? clusterId : DEFAULT_CLUSTER_ID);
+        // Group/transaction coordinators and auth are wired in later milestones.
     }
 
     @Override
     public Map<InetSocketAddress, ChannelInitializer<SocketChannel>> newChannelInitializers() {
         Map<InetSocketAddress, ChannelInitializer<SocketChannel>> initializers = new LinkedHashMap<>();
         for (KafkaListenerEndpoint endpoint : config.listenerEndpoints()) {
-            initializers.put(endpoint.toSocketAddress(), new KafkaChannelInitializer(config));
+            initializers.put(endpoint.toSocketAddress(), new KafkaChannelInitializer(requestContext));
         }
         return initializers;
     }
