@@ -20,4 +20,5 @@ include(
     "kpulse-protocol-handler",
     "kpulse-schema-registry",
     "kpulse-tests",
+    "e2e-client",
 )

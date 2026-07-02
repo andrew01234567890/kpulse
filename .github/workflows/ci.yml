@@ -86,10 +86,12 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: ./.github/actions/setup-java-gradle
-      - name: Build the kpulse NAR
-        run: ./gradlew :kpulse-protocol-handler:nar --console=plain
-      - name: Stage NAR for the broker image build
-        run: cp kpulse-protocol-handler/build/libs/kpulse-protocol-handler-*.nar e2e/kpulse.nar
+      - name: Build the kpulse NAR and e2e Kafka client
+        run: ./gradlew :kpulse-protocol-handler:nar :e2e-client:installDist --console=plain
+      - name: Stage NAR and e2e client for the broker image build
+        run: |
+          cp kpulse-protocol-handler/build/libs/kpulse-protocol-handler-*.nar e2e/kpulse.nar
+          cp -r e2e-client/build/install/e2e-client e2e/e2e-client
       - name: Build the broker image with kpulse
         run: docker build -t kpulse-broker:e2e e2e
       - name: Create KIND cluster
@@ -102,7 +104,7 @@ jobs:
         run: kubectl apply -f e2e/pulsar-standalone.yaml
       - name: Wait for broker readiness
         run: kubectl rollout status deployment/pulsar-kpulse --timeout=300s
-      - name: Assert kpulse loaded and the Kafka listener is bound
+      - name: Assert real Kafka produce/consume round-trip, cross-checked via pulsar-admin
         run: bash e2e/assert.sh
       - name: Collect broker diagnostics on failure
         if: failure()
