@@ -16,6 +16,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Enforce that every workflow job runs on ubuntu-latest.
+  lint-runners:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Ensure all workflow jobs run on ubuntu-latest
+        run: |
+          bad=$(grep -rnE '^[[:space:]]*runs-on:' .github/workflows/ \
+            | grep -vE 'runs-on:[[:space:]]*ubuntu-latest[[:space:]]*$' || true)
+          if [ -n "${bad}" ]; then
+            echo "::error::Workflow jobs must run on ubuntu-latest. Offending lines:"
+            echo "${bad}"
+            exit 1
+          fi
+          echo "All workflow jobs run on ubuntu-latest."
+
   # Semver: release (main) builds only; runs first and feeds the release job.
   version:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
