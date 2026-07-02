@@ -1,0 +1,23 @@
+name: block-fork-prs
+
+# GitHub does not let a user-owned public repo disable forking, so instead close any pull request
+# opened from a fork (or any other repo) the moment it appears. In-repo branch PRs — where head and
+# base are the same repository — are untouched.
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  block-forks:
+    if: github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close the fork pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr close "$PR_URL" --comment "This repository does not accept pull requests from forks. Please contact the maintainer if you would like to contribute."
