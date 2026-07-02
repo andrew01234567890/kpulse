@@ -3,46 +3,105 @@ package dev.kpulse;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
-import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.requests.AbstractResponse;
 import org.apache.kafka.common.requests.RequestHeader;
+import org.apache.kafka.common.requests.ResponseHeader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Per-connection Kafka request handler.
+ * Per-connection Kafka request handler: decode, dispatch to {@link KafkaApis}, and flush responses in
+ * request order.
  *
- * <p>M0 decodes the request header and establishes the dispatch seam; per-API handling and response
- * encoding (in request order, as the Kafka protocol requires) are added incrementally from M1.
+ * <p>Produce and Fetch complete asynchronously and out of order, but Kafka requires per-connection
+ * responses to be written in the order requests arrived so the client can match correlation IDs. Each
+ * request reserves a queue slot on arrival; completed responses drain only from the head of the queue.
+ * All queue access happens on the channel event loop, so no locking is needed.
  */
 public class KafkaRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaRequestHandler.class);
 
-    @SuppressWarnings("unused") // used by per-API handlers from M1 onward
-    private final KafkaServiceConfiguration config;
+    private final Function<KafkaHeaderAndRequest, CompletableFuture<AbstractResponse>> dispatch;
+    private final ArrayDeque<PendingResponse> queue = new ArrayDeque<>();
 
-    public KafkaRequestHandler(KafkaServiceConfiguration config) {
-        this.config = config;
+    public KafkaRequestHandler(KafkaRequestContext context) {
+        this(new KafkaApis(context)::handle);
+    }
+
+    KafkaRequestHandler(Function<KafkaHeaderAndRequest, CompletableFuture<AbstractResponse>> dispatch) {
+        this.dispatch = dispatch;
+    }
+
+    private static final class PendingResponse {
+        private final RequestHeader header;
+        private AbstractResponse response;
+
+        private PendingResponse(RequestHeader header) {
+            this.header = header;
+        }
     }
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, ByteBuf frame) {
-        ByteBuffer buffer = frame.nioBuffer();
-        RequestHeader header = RequestHeader.parse(buffer);
-        ApiKeys apiKey = header.apiKey();
-        if (log.isDebugEnabled()) {
-            log.debug("Received {} v{} correlationId={} from {}",
-                apiKey, header.apiVersion(), header.correlationId(), ctx.channel().remoteAddress());
+        if (isUnsupportedApiVersions(frame)) {
+            writeApiVersionsBootstrap(ctx, frame);
+            return;
         }
-        dispatch(ctx, header);
+
+        KafkaHeaderAndRequest request;
+        try {
+            request = KafkaRequestDecoder.decode(frame);
+        } catch (RuntimeException e) {
+            log.warn("Closing connection {}: undecodable Kafka request", ctx.channel().remoteAddress(), e);
+            ctx.close();
+            return;
+        }
+
+        if (!KafkaApis.expectsResponse(request)) {
+            dispatch.apply(request).whenComplete((response, error) -> request.release());
+            return;
+        }
+
+        PendingResponse slot = new PendingResponse(request.header());
+        queue.addLast(slot);
+        dispatch.apply(request).whenComplete((response, error) -> ctx.executor().execute(() -> {
+            slot.response = (error == null)
+                ? response
+                : request.request().getErrorResponse(error);
+            request.release();
+            flushReady(ctx);
+        }));
     }
 
-    private void dispatch(ChannelHandlerContext ctx, RequestHeader header) {
-        // Placeholder until M1 wires real per-API handlers. Closing is safer than a malformed reply.
-        log.warn("kpulse M0 does not yet answer {} — closing connection {}",
-            header.apiKey(), ctx.channel().remoteAddress());
-        ctx.close();
+    private void flushReady(ChannelHandlerContext ctx) {
+        while (!queue.isEmpty() && queue.peekFirst().response != null) {
+            PendingResponse done = queue.pollFirst();
+            ctx.write(KafkaResponseEncoder.encode(done.header, done.response));
+        }
+        ctx.flush();
+    }
+
+    private static boolean isUnsupportedApiVersions(ByteBuf frame) {
+        if (frame.readableBytes() < Integer.BYTES) {
+            return false;
+        }
+        int readerIndex = frame.readerIndex();
+        short apiKeyId = frame.getShort(readerIndex);
+        short apiVersion = frame.getShort(readerIndex + Short.BYTES);
+        return apiKeyId == ApiKeys.API_VERSIONS.id && !ApiKeys.API_VERSIONS.isVersionSupported(apiVersion);
+    }
+
+    private static void writeApiVersionsBootstrap(ChannelHandlerContext ctx, ByteBuf frame) {
+        int correlationId = frame.getInt(frame.readerIndex() + 2 * Short.BYTES);
+        ResponseHeader responseHeader =
+            new ResponseHeader(correlationId, ApiKeys.API_VERSIONS.responseHeaderVersion((short) 0));
+        ctx.writeAndFlush(KafkaResponseEncoder.encode(
+            responseHeader, (short) 0, KafkaResponseFactory.apiVersionsUnsupported()));
     }
 
     @Override

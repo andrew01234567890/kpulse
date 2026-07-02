@@ -36,3 +36,7 @@ configurations.named("runtimeClasspath") {
     exclude(group = "org.slf4j")
     pulsarPlatformModules.forEach { exclude(group = "org.apache.pulsar", module = it) }
 }
+
+// The nar plugin disables the plain jar; re-enable it so sibling modules (kpulse-tests) can compile
+// against the handler's classes. The NAR remains the deployable artifact for the broker.
+tasks.named<Jar>("jar") { enabled = true }
