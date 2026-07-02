@@ -57,17 +57,21 @@ public final class KafkaRoundTripClient {
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        props.put(ProducerConfig.ACKS_CONFIG, "1");
+        // acks=all rather than idempotence: enable.idempotence needs InitProducerId(22), which
+        // kpulse only ships in M7. 60s budgets absorb cold-start topic/ledger creation on
+        // constrained CI runners; no produce retry loop — re-sending would duplicate entries and
+        // break the strict offset assertions.
+        props.put(ProducerConfig.ACKS_CONFIG, "all");
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, false);
-        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 30_000);
-        props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 30_000);
+        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 60_000);
+        props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 60_000);
 
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
             for (int i = 0; i < count; i++) {
                 String key = "k" + i;
                 String value = "v" + i;
                 RecordMetadata metadata =
-                    producer.send(new ProducerRecord<>(topic, key, value)).get(30, TimeUnit.SECONDS);
+                    producer.send(new ProducerRecord<>(topic, key, value)).get(60, TimeUnit.SECONDS);
                 System.out.println("PRODUCED\t" + metadata.offset() + "\t" + key + "\t" + value);
             }
         }

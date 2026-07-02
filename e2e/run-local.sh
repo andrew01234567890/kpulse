@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the KIND e2e flow locally, mirroring .github/workflows/kind-e2e.yml.
+# Run the KIND e2e flow locally, mirroring the kind-e2e job in .github/workflows/ci.yml.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

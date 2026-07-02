@@ -89,7 +89,7 @@ echo "OK: produced ${RECORD_COUNT} records with sequential offsets 0..$((RECORD_
 
 echo
 echo "Consuming ${RECORD_COUNT} records back from ${TOPIC} (partition 0, from earliest, manual assign)..."
-if ! consume_out=$(kubectl exec "${POD}" -- "${CLIENT}" consume "${BOOTSTRAP}" "${TOPIC}" "${RECORD_COUNT}" 30000); then
+if ! consume_out=$(kubectl exec "${POD}" -- "${CLIENT}" consume "${BOOTSTRAP}" "${TOPIC}" "${RECORD_COUNT}" 60000); then
   echo "FAIL: kubectl exec consume failed"
   echo "${consume_out}"
   exit 1
