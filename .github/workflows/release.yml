@@ -1,0 +1,59 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag + GitHub Release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0 # need the full tag history to compute the next version
+      - name: Compute and publish release from the merged PR bump level
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # The bump level is authoritative from the merged PR's own title. Direct commits
+          # (e.g. the initial scaffold) have no associated PR and never cut a release.
+          pr_title=$(gh api "repos/${REPO}/commits/${SHA}/pulls" --jq '.[0].title // ""')
+          if [ -z "${pr_title}" ]; then
+            echo "No associated PR for ${SHA} — skipping release."
+            exit 0
+          fi
+          echo "Merged PR title: ${pr_title}"
+
+          bump=$(printf '%s' "${pr_title}" | sed -nE 's/^\[(major|minor|patch)\].*/\1/p')
+          if [ -z "${bump}" ]; then
+            echo "PR title has no [major|minor|patch] prefix — skipping release."
+            exit 0
+          fi
+
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          latest="${latest:-v0.0.0}"
+          ver="${latest#v}"
+          major="${ver%%.*}"; rest="${ver#*.}"; minor="${rest%%.*}"; patch="${rest##*.}"
+
+          case "${bump}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          next="v${major}.${minor}.${patch}"
+
+          echo "Releasing ${next} (bump=${bump}, previous=${latest})"
+          gh release create "${next}" --target "${SHA}" --title "${next}" --generate-notes

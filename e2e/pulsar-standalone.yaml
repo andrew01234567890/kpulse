@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pulsar-kpulse
+  labels:
+    app: pulsar-kpulse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pulsar-kpulse
+  template:
+    metadata:
+      labels:
+        app: pulsar-kpulse
+    spec:
+      containers:
+        - name: broker
+          image: kpulse-broker:e2e
+          imagePullPolicy: Never # use the kind-loaded image, never pull
+          command: ["sh", "-c"]
+          args:
+            - "cat /pulsar/conf/kpulse-standalone.conf >> /pulsar/conf/standalone.conf && exec bin/pulsar standalone -nss -nfw"
+          env:
+            # Cap the standalone JVM so ZK + BookKeeper + broker fit under the container limit.
+            - name: PULSAR_MEM
+              value: "-Xms512m -Xmx1024m -XX:MaxDirectMemorySize=1024m"
+          ports:
+            - containerPort: 6650
+            - containerPort: 8080
+            - containerPort: 9092
+          readinessProbe:
+            tcpSocket:
+              port: 6650
+            initialDelaySeconds: 25
+            periodSeconds: 5
+            failureThreshold: 48
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              memory: "3Gi"

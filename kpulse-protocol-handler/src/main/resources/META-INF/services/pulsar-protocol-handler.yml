@@ -1,0 +1,3 @@
+name: kafka
+description: kpulse — Kafka protocol handler for Apache Pulsar
+handlerClass: dev.kpulse.KafkaProtocolHandler

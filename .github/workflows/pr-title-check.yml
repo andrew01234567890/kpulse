@@ -1,0 +1,33 @@
+name: pr-title-check
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-title-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title and body
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title || "";
+            const body = (context.payload.pull_request.body || "").trim();
+            const titlePattern = /^\[(major|minor|patch)\]\s+\S.*/;
+            const errors = [];
+            if (!titlePattern.test(title)) {
+              errors.push(
+                `PR title must match \`[major|minor|patch] Descriptive Title\` — got: "${title}"`);
+            }
+            if (body.length === 0) {
+              errors.push("PR description must not be empty.");
+            }
+            if (errors.length) {
+              core.setFailed(errors.join("\n"));
+            } else {
+              core.info(`OK: "${title}"`);
+            }

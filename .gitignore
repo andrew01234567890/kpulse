@@ -1,0 +1,38 @@
+# Gradle
+.gradle/
+build/
+
+# Java
+*.class
+
+# IDE / editors
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+bin/
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and local scratch
+*.log
+scratch/
+tmp/
+
+# e2e / Kubernetes local artifacts
+e2e-logs/
+kubeconfig*
+*.tgz
+e2e/kpulse.nar
+
+# Local scratch and generated files must not be committed.
+*.tmp
+.env
+.env.*
