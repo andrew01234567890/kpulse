@@ -8,6 +8,7 @@ dependencies {
     testImplementation(project(":kpulse-protocol-handler"))
     testImplementation(project(":kpulse-common"))
     testImplementation(libs.pulsar.broker)
+    testImplementation(libs.pulsar.testmocks)
     testImplementation(libs.kafka.clients)
 
     testImplementation(platform(libs.junit.bom))
