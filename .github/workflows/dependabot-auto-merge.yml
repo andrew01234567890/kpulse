@@ -1,0 +1,25 @@
+name: dependabot-auto-merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
+      - name: Enable auto-merge for patch and minor updates
+        # Auto-merge only takes effect after the required checks (build-unit, kind-e2e,
+        # pr-title-check) pass — the branch ruleset enforces that gate. Major bumps are held for
+        # manual review, since a green CI does not prove a major upgrade is behaviourally safe.
+        if: contains(fromJSON('["version-update:semver-patch","version-update:semver-minor"]'), steps.metadata.outputs.update-type)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
