@@ -1,0 +1,133 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # PRs: group by ref so a new push cancels superseded runs. Main: group by SHA so each
+  # commit's run is independent and can never be cancelled by a later push (which would
+  # otherwise silently drop that commit's release).
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Semver: release (main) builds only; runs first and feeds the release job.
+  version:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # for the commit -> associated-PR lookup
+    outputs:
+      next: ${{ steps.compute.outputs.next }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - id: compute
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Idempotency: never re-release a commit that already carries a version tag
+          # (e.g. someone hits "Re-run all jobs" on an already-released run).
+          existing=$(git tag --points-at "${SHA}" | grep '^v' | head -1 || true)
+          if [ -n "${existing}" ]; then
+            echo "Commit ${SHA} is already released as ${existing} — skipping."
+            echo "next=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Bump level is authoritative from the merged PR's title; direct commits never release.
+          pr_title=$(gh api "repos/${REPO}/commits/${SHA}/pulls" --jq '.[0].title // ""')
+          bump=$(printf '%s' "${pr_title}" | sed -nE 's/^\[(major|minor|patch)\].*/\1/p')
+          if [ -z "${bump}" ]; then
+            echo "No [major|minor|patch] bump in \"${pr_title}\" — no release."
+            echo "next=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          latest="${latest:-v0.0.0}"
+          ver="${latest#v}"
+          major="${ver%%.*}"; rest="${ver#*.}"; minor="${rest%%.*}"; patch="${rest##*.}"
+          case "${bump}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          echo "next=v${major}.${minor}.${patch}" >> "$GITHUB_OUTPUT"
+          echo "Next version: v${major}.${minor}.${patch} (bump=${bump}, previous=${latest})"
+
+  build-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: ./.github/actions/setup-java-gradle
+      - name: Build, unit + integration tests
+        run: ./gradlew build --console=plain --stacktrace
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-reports
+          path: '**/build/reports/tests/**'
+          if-no-files-found: ignore
+          retention-days: 7
+
+  kind-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: ./.github/actions/setup-java-gradle
+      - name: Build the kpulse NAR
+        run: ./gradlew :kpulse-protocol-handler:nar --console=plain
+      - name: Stage NAR for the broker image build
+        run: cp kpulse-protocol-handler/build/libs/kpulse-protocol-handler-*.nar e2e/kpulse.nar
+      - name: Build the broker image with kpulse
+        run: docker build -t kpulse-broker:e2e e2e
+      - name: Create KIND cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
+        with:
+          cluster_name: kpulse-e2e
+      - name: Load the broker image into KIND
+        run: kind load docker-image kpulse-broker:e2e --name kpulse-e2e
+      - name: Deploy Pulsar standalone with kpulse
+        run: kubectl apply -f e2e/pulsar-standalone.yaml
+      - name: Wait for broker readiness
+        run: kubectl rollout status deployment/pulsar-kpulse --timeout=300s
+      - name: Assert kpulse loaded and the Kafka listener is bound
+        run: bash e2e/assert.sh
+      - name: Collect broker diagnostics on failure
+        if: failure()
+        run: |
+          kubectl describe deployment/pulsar-kpulse || true
+          kubectl logs deployment/pulsar-kpulse --tail=400 || true
+
+  # Release: main only, after all tests pass, one release at a time.
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.version.outputs.next != ''
+    needs: [version, build-unit, kind-e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: kpulse-release
+      cancel-in-progress: false
+    steps:
+      - name: Create tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NEXT: ${{ needs.version.outputs.next }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          echo "Releasing ${NEXT}"
+          gh release create "${NEXT}" --target "${SHA}" --title "${NEXT}" --generate-notes
