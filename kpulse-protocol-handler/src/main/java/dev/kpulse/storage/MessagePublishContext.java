@@ -27,16 +27,19 @@ public final class MessagePublishContext implements Topic.PublishContext {
     private CompletableFuture<Long> offsetFuture;
     private int numberOfMessages;
     private long baseOffset;
+    private ByteBuf payload;
 
     private MessagePublishContext(Recycler.Handle<MessagePublishContext> handle) {
         this.handle = handle;
     }
 
-    public static MessagePublishContext get(CompletableFuture<Long> offsetFuture, int numberOfMessages) {
+    public static MessagePublishContext get(
+            CompletableFuture<Long> offsetFuture, int numberOfMessages, ByteBuf payload) {
         MessagePublishContext context = RECYCLER.get();
         context.offsetFuture = offsetFuture;
         context.numberOfMessages = numberOfMessages;
         context.baseOffset = -1L;
+        context.payload = payload;
         return context;
     }
 
@@ -54,7 +57,11 @@ public final class MessagePublishContext implements Topic.PublishContext {
     public void completed(Exception exception, long ledgerId, long entryId) {
         CompletableFuture<Long> future = this.offsetFuture;
         long offset = this.baseOffset;
+        ByteBuf toRelease = this.payload;
         recycle();
+        if (toRelease != null) {
+            toRelease.release();
+        }
         if (exception != null) {
             future.completeExceptionally(exception);
         } else {
@@ -66,6 +73,7 @@ public final class MessagePublishContext implements Topic.PublishContext {
         this.offsetFuture = null;
         this.numberOfMessages = 0;
         this.baseOffset = -1L;
+        this.payload = null;
         handle.recycle(this);
     }
 }

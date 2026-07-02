@@ -50,10 +50,12 @@ public final class KafkaEntryFormatter {
      * performed; the {@code magic} parameter is reserved for that later.
      */
     public MemoryRecords decode(List<Entry> entries, byte magic) {
-        List<byte[]> batches = new ArrayList<>(entries.size());
-        int totalSize = 0;
-        for (Entry entry : entries) {
-            try {
+        // Release every entry on all paths — a throw mid-loop (short/corrupt/foreign entry) must not
+        // leak the entries not yet reached. Batch bytes are copied out before release, so this is safe.
+        try {
+            List<byte[]> batches = new ArrayList<>(entries.size());
+            int totalSize = 0;
+            for (Entry entry : entries) {
                 long baseOffset = EntryMetadataUtils.peekBaseOffset(entry);
                 ByteBuf buf = entry.getDataBuffer();
                 Commands.parseMessageMetadata(buf);
@@ -64,16 +66,16 @@ public final class KafkaEntryFormatter {
 
                 batches.add(batch);
                 totalSize += batch.length;
-            } finally {
-                entry.release();
             }
-        }
 
-        ByteBuffer merged = ByteBuffer.allocate(totalSize);
-        for (byte[] batch : batches) {
-            merged.put(batch);
+            ByteBuffer merged = ByteBuffer.allocate(totalSize);
+            for (byte[] batch : batches) {
+                merged.put(batch);
+            }
+            merged.flip();
+            return MemoryRecords.readableRecords(merged);
+        } finally {
+            entries.forEach(Entry::release);
         }
-        merged.flip();
-        return MemoryRecords.readableRecords(merged);
     }
 }

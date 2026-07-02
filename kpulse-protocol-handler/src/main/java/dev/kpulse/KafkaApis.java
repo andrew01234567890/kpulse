@@ -167,8 +167,9 @@ public final class KafkaApis {
         if (timestamp == ListOffsetsRequest.LATEST_TIMESTAMP) {
             return CompletableFuture.completedFuture(log.logEndOffset());
         }
-        // Timestamp-based lookup (OffsetFinder) is post-M1; fall back to the log end offset.
-        return CompletableFuture.completedFuture(log.logEndOffset());
+        // Timestamp-based lookup (OffsetFinder) is post-M1. Signal "no offset found" (-1) rather than
+        // the log end, which would make offsetsForTimes seek to the tail and silently skip all records.
+        return CompletableFuture.completedFuture(ListOffsetsResponse.UNKNOWN_OFFSET);
     }
 
     private static CompletableFuture<AbstractResponse> completed(AbstractResponse response) {

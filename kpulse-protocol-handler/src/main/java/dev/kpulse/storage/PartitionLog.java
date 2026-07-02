@@ -48,7 +48,9 @@ public final class PartitionLog {
             return CompletableFuture.failedFuture(e);
         }
         CompletableFuture<Long> offsetFuture = new CompletableFuture<>();
-        persistentTopic.publishMessage(entry, MessagePublishContext.get(offsetFuture, numberOfMessages));
+        // The context releases `entry` in completed(): publishMessage retains its own duplicate, so
+        // kpulse's ref must be dropped once the publish resolves, else the pooled buffer leaks.
+        persistentTopic.publishMessage(entry, MessagePublishContext.get(offsetFuture, numberOfMessages, entry));
         return offsetFuture;
     }
 
