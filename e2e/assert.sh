@@ -11,31 +11,28 @@ POD=$(kubectl get pod -l app=pulsar-kpulse -o jsonpath='{.items[0].metadata.name
 echo "Broker pod: ${POD}"
 
 log_file=$(mktemp)
+trap 'rm -f "${log_file}"' EXIT
 
-echo "Waiting for kpulse to initialize in the broker log..."
-initialized=false
+# Re-fetch the log every iteration and require BOTH init and bind: the bind line ("Starting kpulse
+# Kafka protocol handler" / "Successfully bind protocol ... protocol=kafka") is logged in start(),
+# strictly after "Initialized kpulse" in initialize(), so a single early snapshot could miss it.
+echo "Waiting for kpulse to initialize and bind its Kafka listener..."
+ready=false
 for _ in $(seq 1 60); do
   kubectl logs "${POD}" >"${log_file}" 2>/dev/null || true
-  if grep -q "Initialized kpulse" "${log_file}"; then
-    echo "OK: kpulse protocol handler initialized"
-    initialized=true
+  if grep -q "Initialized kpulse" "${log_file}" \
+    && grep -qE "bind protocol .*protocol=kafka|Starting kpulse Kafka protocol handler" "${log_file}"; then
+    ready=true
     break
   fi
   sleep 3
 done
-if [ "${initialized}" != true ]; then
-  echo "FAIL: kpulse did not initialize within timeout"
+if [ "${ready}" != true ]; then
+  echo "FAIL: kpulse did not initialize and bind the Kafka listener within timeout"
   kubectl logs "${POD}" --tail=200 || true
   exit 1
 fi
-
-if grep -qE "bind protocol .*protocol=kafka|Starting kpulse Kafka protocol handler" "${log_file}"; then
-  echo "OK: broker bound the Kafka protocol listener"
-else
-  echo "FAIL: broker did not bind the Kafka protocol listener"
-  kubectl logs "${POD}" --tail=200 || true
-  exit 1
-fi
+echo "OK: kpulse initialized and bound the Kafka protocol listener"
 
 echo "Checking the Kafka listener accepts connections on 9092..."
 port_open=false
