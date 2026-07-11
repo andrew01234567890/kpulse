@@ -13,6 +13,7 @@ A **Kafka protocol handler for Apache Pulsar**. `kpulse` is a Pulsar `ProtocolHa
 | Component | Version |
 |-----------|---------|
 | Apache Pulsar | `5.0.0-M1` |
+| Oxia metadata server | `0.16.7` (Pulsar M1 bundles client `0.8.0`) |
 | Apache Kafka (protocol baseline) | `4.3.1` |
 | Java | 17+ (built on JDK 21) |
 | Build | Gradle (via the committed `./gradlew` wrapper) |

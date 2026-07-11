@@ -1,6 +1,61 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  name: oxia
+  labels:
+    app: oxia
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oxia
+  template:
+    metadata:
+      labels:
+        app: oxia
+    spec:
+      containers:
+        - name: oxia
+          # Local tag created from Oxia 0.16.7's pinned linux/amd64 manifest.
+          image: oxia/oxia:0.16.7-kpulse
+          imagePullPolicy: Never # loaded into KIND by ci.yml / run-local.sh
+          command: ["oxia", "standalone", "--shards=1", "--wal-sync-data=false"]
+          ports:
+            - name: client
+              containerPort: 6648
+            - name: metrics
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            periodSeconds: 2
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oxia
+spec:
+  selector:
+    app: oxia
+  ports:
+    - name: client
+      port: 6648
+      targetPort: client
+    - name: metrics
+      port: 8080
+      targetPort: metrics
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
   name: pulsar-kpulse
   labels:
     app: pulsar-kpulse
@@ -18,11 +73,14 @@ spec:
         - name: broker
           image: kpulse-broker:e2e
           imagePullPolicy: Never # use the kind-loaded image, never pull
-          command: ["sh", "-c"]
+          command: ["bash", "-c"]
           args:
-            - "cat /pulsar/conf/kpulse-standalone.conf >> /pulsar/conf/standalone.conf && exec bin/pulsar standalone -nss -nfw"
+            - |
+              until (echo > /dev/tcp/oxia/6648) 2>/dev/null; do sleep 1; done
+              cat /pulsar/conf/kpulse-standalone.conf >> /pulsar/conf/standalone.conf
+              exec bin/pulsar standalone -nss -nfw --metadata-url oxia://oxia:6648
           env:
-            # Cap the standalone JVM so ZK + BookKeeper + broker fit under the container limit.
+            # Cap the standalone JVM so BookKeeper + broker fit under the container limit.
             - name: PULSAR_MEM
               value: "-Xms512m -Xmx1024m -XX:MaxDirectMemorySize=1024m"
           ports:
