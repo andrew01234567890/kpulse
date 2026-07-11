@@ -1,6 +1,7 @@
 package dev.kpulse.common;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
 
@@ -15,9 +16,18 @@ class KafkaTopicNameTest {
     }
 
     @Test
-    void leavesAlreadyQualifiedPulsarTopicUnchanged() {
+    void rejectsQualifiedPulsarTopicThatEscapesConfiguredNamespace() {
         String qualified = "persistent://tenant-a/ns-b/events";
-        assertThat(mapper.toPulsarTopic(qualified)).isEqualTo(qualified);
+        assertThatThrownBy(() -> mapper.toPulsarTopic(qualified))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsKafkaTopicNamesThatKafkaDoesNotAllow() {
+        assertThatThrownBy(() -> mapper.toPulsarTopic("tenant/namespace/topic"))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> mapper.toPulsarTopic(".."))
+            .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

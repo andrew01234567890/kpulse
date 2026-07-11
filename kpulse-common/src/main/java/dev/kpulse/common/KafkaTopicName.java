@@ -1,6 +1,7 @@
 package dev.kpulse.common;
 
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Bidirectional mapping between Kafka topic names and Pulsar fully-qualified topic names.
@@ -10,6 +11,8 @@ import java.util.Objects;
 public final class KafkaTopicName {
 
     private static final String PERSISTENT_DOMAIN = "persistent://";
+    private static final int MAX_TOPIC_LENGTH = 249;
+    private static final Pattern VALID_TOPIC = Pattern.compile("[a-zA-Z0-9._-]+");
 
     private final String tenant;
     private final String namespace;
@@ -22,10 +25,17 @@ public final class KafkaTopicName {
     /** Translate a Kafka topic name to its Pulsar fully-qualified name. */
     public String toPulsarTopic(String kafkaTopic) {
         Objects.requireNonNull(kafkaTopic, "kafkaTopic");
-        if (kafkaTopic.startsWith(PERSISTENT_DOMAIN)) {
-            return kafkaTopic;
-        }
+        validateKafkaTopic(kafkaTopic);
         return PERSISTENT_DOMAIN + tenant + "/" + namespace + "/" + kafkaTopic;
+    }
+
+    private static void validateKafkaTopic(String topic) {
+        if (topic.length() > MAX_TOPIC_LENGTH
+                || topic.equals(".")
+                || topic.equals("..")
+                || !VALID_TOPIC.matcher(topic).matches()) {
+            throw new IllegalArgumentException("Invalid Kafka topic name: " + topic);
+        }
     }
 
     /** Extract the short Kafka topic name from a Pulsar fully-qualified name. */

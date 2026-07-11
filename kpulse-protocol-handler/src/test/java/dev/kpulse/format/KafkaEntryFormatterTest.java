@@ -2,8 +2,10 @@ package dev.kpulse.format;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -20,6 +22,7 @@ import org.apache.kafka.common.record.internal.RecordBatch;
 import org.apache.kafka.common.record.internal.SimpleRecord;
 import org.apache.pulsar.common.intercept.AppendIndexMetadataInterceptor;
 import org.apache.pulsar.common.intercept.BrokerEntryMetadataInterceptor;
+import org.apache.pulsar.common.api.proto.MessageMetadata;
 import org.apache.pulsar.common.protocol.Commands;
 import org.junit.jupiter.api.Test;
 
@@ -59,6 +62,43 @@ class KafkaEntryFormatterTest {
         }
     }
 
+    @Test
+    void patchesEveryRecordBatchStoredInOnePulsarEntry() {
+        Set<BrokerEntryMetadataInterceptor> interceptors = Set.of(new AppendIndexMetadataInterceptor());
+        MemoryRecords records = concatenate(records("a", "b"), records("c", "d", "e"));
+        Entry entry = stampedEntry(interceptors, records, 5);
+
+        MemoryRecords decoded = formatter.decode(mutableList(entry), RecordBatch.MAGIC_VALUE_V2);
+
+        assertThat(decoded.records()).extracting(Record::offset)
+            .containsExactly(0L, 1L, 2L, 3L, 4L);
+        for (MutableRecordBatch batch : decoded.batches()) {
+            batch.ensureValid();
+        }
+    }
+
+    @Test
+    void rejectsNativePulsarEntriesInsteadOfParsingThemAsKafkaRecords() {
+        Set<BrokerEntryMetadataInterceptor> interceptors = Set.of(new AppendIndexMetadataInterceptor());
+        MessageMetadata metadata = new MessageMetadata()
+            .setProducerName("native-producer")
+            .setSequenceId(0L)
+            .setPublishTime(System.currentTimeMillis())
+            .setNumMessagesInBatch(1);
+        ByteBuf payload = Unpooled.wrappedBuffer("not-kafka".getBytes(UTF_8));
+        ByteBuf encoded;
+        try {
+            encoded = Commands.serializeMetadataAndPayload(Commands.ChecksumType.None, metadata, payload);
+        } finally {
+            payload.release();
+        }
+        Entry entry = new TestEntry(Commands.addBrokerEntryMetadata(encoded, interceptors, 1));
+
+        assertThatThrownBy(() -> formatter.decode(mutableList(entry), RecordBatch.MAGIC_VALUE_V2))
+            .isInstanceOf(org.apache.kafka.common.InvalidRecordException.class)
+            .hasMessageContaining("not written in kpulse Kafka format");
+    }
+
     private Entry stampedEntry(Set<BrokerEntryMetadataInterceptor> interceptors, MemoryRecords records,
             int numberOfMessages) {
         ByteBuf encoded = formatter.encode(records, numberOfMessages);
@@ -70,6 +110,14 @@ class KafkaEntryFormatterTest {
             .map(value -> new SimpleRecord(value.getBytes(UTF_8)))
             .toArray(SimpleRecord[]::new);
         return MemoryRecords.withRecords(Compression.NONE, simpleRecords);
+    }
+
+    private static MemoryRecords concatenate(MemoryRecords... records) {
+        int size = Arrays.stream(records).mapToInt(MemoryRecords::sizeInBytes).sum();
+        ByteBuffer combined = ByteBuffer.allocate(size);
+        Arrays.stream(records).forEach(value -> combined.put(value.buffer().duplicate()));
+        combined.flip();
+        return MemoryRecords.readableRecords(combined);
     }
 
     private static String utf8(ByteBuffer buffer) {

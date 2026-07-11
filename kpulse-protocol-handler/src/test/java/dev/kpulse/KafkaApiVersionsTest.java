@@ -12,13 +12,12 @@ import org.junit.jupiter.api.Test;
 class KafkaApiVersionsTest {
 
     @Test
-    void advertisesExactlyTheSixImplementedApisWithTheirRanges() {
+    void advertisesExactlyTheFiveImplementedApisWithTheirRanges() {
         assertThat(KafkaResponseFactory.ADVERTISED_APIS).containsExactly(
             new ApiRange(ApiKeys.PRODUCE, (short) 3, (short) 12),
             new ApiRange(ApiKeys.FETCH, (short) 4, (short) 12),
             new ApiRange(ApiKeys.LIST_OFFSETS, (short) 1, (short) 7),
-            new ApiRange(ApiKeys.METADATA, (short) 0, (short) 12),
-            new ApiRange(ApiKeys.FIND_COORDINATOR, (short) 0, (short) 4),
+            new ApiRange(ApiKeys.METADATA, (short) 0, (short) 11),
             new ApiRange(ApiKeys.API_VERSIONS, (short) 0, (short) 4));
     }
 
@@ -33,7 +32,14 @@ class KafkaApiVersionsTest {
         var response = KafkaResponseFactory.apiVersions();
         assertThat(response.data().errorCode()).isEqualTo(Errors.NONE.code());
         assertThat(response.data().apiKeys().stream().map(ApiVersion::apiKey).collect(Collectors.toSet()))
-            .containsExactlyInAnyOrder((short) 0, (short) 1, (short) 2, (short) 3, (short) 10, (short) 18);
+            .containsExactlyInAnyOrder((short) 0, (short) 1, (short) 2, (short) 3, (short) 18);
+    }
+
+    @Test
+    void supportCheckUsesKpulseRangesRatherThanKafkaLibraryRanges() {
+        assertThat(KafkaResponseFactory.isVersionSupported(ApiKeys.FETCH, (short) 12)).isTrue();
+        assertThat(KafkaResponseFactory.isVersionSupported(ApiKeys.FETCH, (short) 13)).isFalse();
+        assertThat(KafkaResponseFactory.isVersionSupported(ApiKeys.JOIN_GROUP, (short) 0)).isFalse();
     }
 
     private static ApiRange rangeFor(ApiKeys apiKey) {

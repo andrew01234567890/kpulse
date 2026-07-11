@@ -2,10 +2,8 @@ package dev.kpulse;
 
 import java.util.List;
 import org.apache.kafka.common.Node;
-import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.message.ApiVersionsResponseData;
 import org.apache.kafka.common.message.FetchResponseData;
-import org.apache.kafka.common.message.FindCoordinatorResponseData;
 import org.apache.kafka.common.message.ListOffsetsResponseData;
 import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.message.ProduceResponseData;
@@ -14,15 +12,13 @@ import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
 import org.apache.kafka.common.requests.FetchResponse;
-import org.apache.kafka.common.requests.FindCoordinatorResponse;
 import org.apache.kafka.common.requests.ListOffsetsResponse;
 import org.apache.kafka.common.requests.MetadataResponse;
 import org.apache.kafka.common.requests.ProduceResponse;
 
 /**
- * Builds Kafka response objects for the six APIs kpulse M1 implements. The advertised ApiVersions
- * surface is exactly these six keys: Metadata and Fetch are capped below their topic-ID versions
- * (v13+), since M1 resolves topics by name.
+ * Builds Kafka response objects for the five APIs kpulse M1 implements. Metadata and Fetch are
+ * capped below their topic-ID versions, since M1 resolves topics by name.
  */
 public final class KafkaResponseFactory {
 
@@ -38,8 +34,7 @@ public final class KafkaResponseFactory {
         new ApiRange(ApiKeys.PRODUCE, (short) 3, (short) 12),
         new ApiRange(ApiKeys.FETCH, (short) 4, (short) 12),
         new ApiRange(ApiKeys.LIST_OFFSETS, (short) 1, (short) 7),
-        new ApiRange(ApiKeys.METADATA, (short) 0, (short) 12),
-        new ApiRange(ApiKeys.FIND_COORDINATOR, (short) 0, (short) 4),
+        new ApiRange(ApiKeys.METADATA, (short) 0, (short) 11),
         new ApiRange(ApiKeys.API_VERSIONS, (short) 0, (short) 4));
 
     private KafkaResponseFactory() {
@@ -61,6 +56,11 @@ public final class KafkaResponseFactory {
     public static ApiVersionsResponse apiVersionsUnsupported() {
         return new ApiVersionsResponse(
             new ApiVersionsResponseData().setErrorCode(Errors.UNSUPPORTED_VERSION.code()));
+    }
+
+    public static boolean isVersionSupported(ApiKeys apiKey, short version) {
+        return ADVERTISED_APIS.stream().anyMatch(range ->
+            range.apiKey() == apiKey && version >= range.minVersion() && version <= range.maxVersion());
     }
 
     public static MetadataResponse metadata(short version, Node self, String clusterId, List<TopicMetadata> topics) {
@@ -93,24 +93,18 @@ public final class KafkaResponseFactory {
         return new MetadataResponse(data, version);
     }
 
-    public static FindCoordinatorResponse findCoordinator(short version, List<String> keys, Node self) {
-        if (version >= 4) {
-            List<FindCoordinatorResponseData.Coordinator> coordinators = keys.stream()
-                .map(key -> FindCoordinatorResponse.prepareCoordinatorResponse(Errors.NONE, key, self))
-                .toList();
-            return new FindCoordinatorResponse(new FindCoordinatorResponseData().setCoordinators(coordinators));
-        }
-        return FindCoordinatorResponse.prepareOldResponse(Errors.NONE, self);
-    }
-
     public static ListOffsetsResponse listOffsets(List<ListOffsetsResponseData.ListOffsetsTopicResponse> topics) {
         return new ListOffsetsResponse(new ListOffsetsResponseData().setTopics(topics));
     }
 
-    public static ListOffsetsResponseData.ListOffsetsTopicResponse listOffsetsTopic(
-            TopicPartition partition, Errors error, long timestamp, long offset) {
-        return ListOffsetsResponse.singletonListOffsetsTopicResponse(
-            partition, error, timestamp, offset, ListOffsetsResponse.UNKNOWN_EPOCH);
+    public static ListOffsetsResponseData.ListOffsetsPartitionResponse listOffsetsPartition(
+            int partition, Errors error, long timestamp, long offset) {
+        return new ListOffsetsResponseData.ListOffsetsPartitionResponse()
+            .setPartitionIndex(partition)
+            .setErrorCode(error.code())
+            .setTimestamp(timestamp)
+            .setOffset(offset)
+            .setLeaderEpoch(ListOffsetsResponse.UNKNOWN_EPOCH);
     }
 
     public static ProduceResponse produce(List<ProduceResponseData.TopicProduceResponse> topics) {

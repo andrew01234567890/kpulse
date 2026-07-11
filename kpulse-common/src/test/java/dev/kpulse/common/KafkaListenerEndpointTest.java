@@ -40,4 +40,14 @@ class KafkaListenerEndpointTest {
         assertThatThrownBy(() -> KafkaListenerEndpoint.parse("PLAINTEXT://host:kafka"))
             .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void rejectsBlankProtocolAndOutOfRangePort() {
+        assertThatThrownBy(() -> KafkaListenerEndpoint.parse("://host:9092"))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> KafkaListenerEndpoint.parse("PLAINTEXT://host:0"))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> KafkaListenerEndpoint.parse("PLAINTEXT://host:65536"))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
 }

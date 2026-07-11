@@ -43,6 +43,32 @@ class KafkaRequestHandlerOrderingTest {
         channel.finishAndReleaseAll();
     }
 
+    @Test
+    void boundsCompletedResponsesWaitingBehindASlowHeadRequest() {
+        Map<Integer, CompletableFuture<AbstractResponse>> pending = new ConcurrentHashMap<>();
+        EmbeddedChannel channel = new EmbeddedChannel(new KafkaRequestHandler(request -> {
+            CompletableFuture<AbstractResponse> future = new CompletableFuture<>();
+            pending.put(request.header().correlationId(), future);
+            return future;
+        }));
+
+        for (int correlationId = 1; correlationId <= 8; correlationId++) {
+            channel.writeInbound(apiVersionsFrame(correlationId));
+        }
+        for (int correlationId = 2; correlationId <= 8; correlationId++) {
+            pending.get(correlationId).complete(KafkaResponseFactory.apiVersions());
+        }
+        channel.runPendingTasks();
+        assertThat(channel.isActive()).isTrue();
+
+        channel.writeInbound(apiVersionsFrame(9));
+        assertThat(channel.isActive()).isFalse();
+
+        pending.get(1).complete(KafkaResponseFactory.apiVersions());
+        channel.runPendingTasks();
+        channel.finishAndReleaseAll();
+    }
+
     private static ByteBuf apiVersionsFrame(int correlationId) {
         RequestHeader header = new RequestHeader(ApiKeys.API_VERSIONS, (short) 3, "c", correlationId);
         return Unpooled.wrappedBuffer(
