@@ -86,6 +86,10 @@ final class EmbeddedPulsarKafka implements AutoCloseable {
         return "127.0.0.1:" + kafkaPort;
     }
 
+    int kafkaPort() {
+        return kafkaPort;
+    }
+
     PulsarService pulsar() {
         return pulsar;
     }

@@ -43,6 +43,20 @@ class PartitionLogTest {
     }
 
     @Test
+    void rejectsTrailingBytesAfterAValidRecordBatch() {
+        MemoryRecords valid = MemoryRecords.withRecords(
+            Compression.NONE, new SimpleRecord("one".getBytes()));
+        ByteBuffer validBuffer = valid.buffer().duplicate();
+        ByteBuffer malformed = ByteBuffer.allocate(validBuffer.remaining() + 1);
+        malformed.put(validBuffer).put((byte) 0).flip();
+        MemoryRecords records = MemoryRecords.readableRecords(malformed);
+
+        assertThatThrownBy(() -> PartitionLog.validateAndCount(records))
+            .isInstanceOf(InvalidRecordException.class)
+            .hasMessageContaining("trailing bytes");
+    }
+
+    @Test
     void rejectsHugeCompressedRecordDeclarationWithoutMaterializingIt() throws Exception {
         ByteArrayOutputStream rawRecord = new ByteArrayOutputStream();
         try (DataOutputStream output = new DataOutputStream(rawRecord)) {

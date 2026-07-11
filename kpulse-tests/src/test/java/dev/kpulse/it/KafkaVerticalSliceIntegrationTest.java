@@ -7,6 +7,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import dev.kpulse.format.KafkaEntryFormatter;
 import dev.kpulse.storage.KafkaTopicManager;
 import dev.kpulse.storage.PartitionLog;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -27,8 +31,16 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.clients.consumer.OffsetOutOfRangeException;
 import org.apache.kafka.common.compress.Compression;
+import org.apache.kafka.common.message.FetchRequestData;
+import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.protocol.ByteBufferAccessor;
+import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.record.internal.SimpleRecord;
+import org.apache.kafka.common.requests.FetchRequest;
+import org.apache.kafka.common.requests.FetchResponse;
+import org.apache.kafka.common.requests.RequestHeader;
+import org.apache.kafka.common.requests.ResponseHeader;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
@@ -114,6 +126,38 @@ class KafkaVerticalSliceIntegrationTest {
             assertThatThrownBy(() -> consumer.poll(Duration.ofSeconds(5)))
                 .isInstanceOf(OffsetOutOfRangeException.class);
         }
+    }
+
+    @Test
+    void reportsMissingTopicAfterEarlierFetchExhaustsTheByteBudget() throws Exception {
+        produce();
+        FetchResponse response = rawFetch(
+            fetchTopic(TOPIC), fetchTopic("missing-after-budget"));
+
+        assertThat(response.data().responses()).hasSize(2);
+        var first = response.data().responses().get(0).partitions().get(0);
+        assertThat(first.errorCode())
+            .isEqualTo(Errors.NONE.code());
+        assertThat(first.records().sizeInBytes()).isGreaterThan(1);
+        assertThat(response.data().responses().get(1).partitions().get(0).errorCode())
+            .isEqualTo(Errors.UNKNOWN_TOPIC_OR_PARTITION.code());
+    }
+
+    @Test
+    void reportsOutOfRangeOffsetAfterEarlierFetchExhaustsTheByteBudget() throws Exception {
+        produce();
+        String laterTopic = "later-offset-check";
+        produceOne(laterTopic);
+
+        FetchResponse response = rawFetch(
+            fetchTopic(TOPIC), fetchTopic(laterTopic, 2L));
+
+        assertThat(response.data().responses()).hasSize(2);
+        var first = response.data().responses().get(0).partitions().get(0);
+        assertThat(first.errorCode()).isEqualTo(Errors.NONE.code());
+        assertThat(first.records().sizeInBytes()).isGreaterThan(1);
+        assertThat(response.data().responses().get(1).partitions().get(0).errorCode())
+            .isEqualTo(Errors.OFFSET_OUT_OF_RANGE.code());
     }
 
     @Test
@@ -205,6 +249,53 @@ class KafkaVerticalSliceIntegrationTest {
             }
         }
         return offsets;
+    }
+
+    private void produceOne(String topic) throws Exception {
+        try (KafkaProducer<String, String> producer = new KafkaProducer<>(producerProperties())) {
+            producer.send(new ProducerRecord<>(topic, "key", "value"))
+                .get(20, TimeUnit.SECONDS);
+        }
+    }
+
+    private static FetchRequestData.FetchTopic fetchTopic(String topic) {
+        return fetchTopic(topic, 0L);
+    }
+
+    private static FetchRequestData.FetchTopic fetchTopic(String topic, long fetchOffset) {
+        return new FetchRequestData.FetchTopic()
+            .setTopic(topic)
+            .setPartitions(List.of(new FetchRequestData.FetchPartition()
+                .setPartition(0)
+                .setFetchOffset(fetchOffset)
+                .setPartitionMaxBytes(1024 * 1024)));
+    }
+
+    private FetchResponse rawFetch(FetchRequestData.FetchTopic... topics) throws Exception {
+        short version = 12;
+        FetchRequestData requestData = new FetchRequestData()
+            .setReplicaId(FetchRequest.CONSUMER_REPLICA_ID)
+            .setMaxWaitMs(0)
+            .setMinBytes(0)
+            .setMaxBytes(1)
+            .setTopics(List.of(topics));
+        FetchRequest request = new FetchRequest(requestData, version);
+        RequestHeader header = new RequestHeader(ApiKeys.FETCH, version, "kpulse-test", 42);
+        ByteBuffer serialized = request.serializeWithHeader(header);
+
+        try (Socket socket = new Socket("127.0.0.1", cluster.kafkaPort());
+             DataOutputStream output = new DataOutputStream(socket.getOutputStream());
+             DataInputStream input = new DataInputStream(socket.getInputStream())) {
+            socket.setSoTimeout(20_000);
+            output.writeInt(serialized.remaining());
+            output.write(serialized.array(), serialized.arrayOffset() + serialized.position(), serialized.remaining());
+            output.flush();
+
+            int responseSize = input.readInt();
+            ByteBuffer responseBuffer = ByteBuffer.wrap(input.readNBytes(responseSize));
+            ResponseHeader.parse(responseBuffer, ApiKeys.FETCH.responseHeaderVersion(version));
+            return FetchResponse.parse(new ByteBufferAccessor(responseBuffer), version);
+        }
     }
 
     private Properties producerProperties() {

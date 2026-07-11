@@ -210,13 +210,9 @@ public final class KafkaApis {
                             -1L, -1L, MemoryRecords.EMPTY));
                         return CompletableFuture.completedFuture(null);
                     }
-                    if (budget.remaining() == 0) {
-                        // The response byte budget is exhausted. Do not resolve or read more topics:
-                        // a malicious request must not turn a zero-byte response into storage work.
-                        topicResponse.partitions().add(KafkaResponseFactory.fetchPartition(
-                            partitionIndex, Errors.NONE, -1L, -1L, MemoryRecords.EMPTY));
-                        return CompletableFuture.completedFuture(null);
-                    }
+                    // A zero-byte read performs bounded offset/log-range validation and reports the
+                    // real watermarks without fetching record payloads. Do not skip it when an
+                    // earlier partition exhausts the response budget: later errors must survive.
                     int maxBytes = Math.max(0,
                         Math.min(partition.partitionMaxBytes(), budget.remaining()));
                     return context.topicManager().getPartitionLog(pulsarTopic, false)

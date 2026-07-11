@@ -217,6 +217,10 @@ public final class PartitionLog {
             throw new InvalidRecordException(
                 "Kafka records exceed the " + MAX_RECORDS_BYTES + " byte M1 limit");
         }
+        if (records.validBytes() != records.sizeInBytes()) {
+            throw new InvalidRecordException(
+                "Kafka records contain trailing bytes or a partial record batch");
+        }
         long numberOfMessages = 0L;
         long decompressedBytes = 0L;
         for (MutableRecordBatch batch : records.batches()) {
