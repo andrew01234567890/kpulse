@@ -1,20 +1,19 @@
 # kpulse
 
 A **Kafka protocol handler for Apache Pulsar**. `kpulse` is a Pulsar `ProtocolHandler` plugin
-(packaged as a `.nar`) that lets unmodified Kafka clients — the Java client, librdkafka,
-Kafka Streams, admin and console tools — produce to and consume from an Apache Pulsar broker as if
-it were a Kafka cluster. The goal is **maximum Kafka client compatibility**.
+(packaged as a `.nar`) whose goal is **maximum Kafka client compatibility**.
 
-> **Status: early.** This is the M0 scaffold — the plugin loads, parses configuration, opens its
-> Kafka listeners, and enforces its broker prerequisites. Per-API request handling (ApiVersions,
-> Metadata, Produce, Fetch, consumer groups, offsets, admin, transactions, SASL, schema registry)
-> lands milestone-by-milestone. See the milestone list below.
+> **Status: early (M1).** ApiVersions, Metadata, Produce, Fetch, and ListOffsets support a
+> single broker and partition 0. Consumer groups, multi-broker routing, additional partitions,
+> admin APIs, transactions, SASL/TLS, authorization, and schema registry are not implemented yet.
+> See the milestone list below.
 
 ## Targets
 
 | Component | Version |
 |-----------|---------|
 | Apache Pulsar | `5.0.0-M1` |
+| Oxia metadata server | `0.16.7` (Pulsar M1 bundles client `0.8.0`) |
 | Apache Kafka (protocol baseline) | `4.3.1` |
 | Java | 17+ (built on JDK 21) |
 | Build | Gradle (via the committed `./gradlew` wrapper) |
@@ -40,11 +39,42 @@ The NAR is written to `kpulse-protocol-handler/build/libs/kpulse-protocol-handle
    brokerEntryMetadataInterceptors=org.apache.pulsar.common.intercept.AppendIndexMetadataInterceptor
    kafkaListeners=PLAINTEXT://0.0.0.0:9092
    kafkaAdvertisedListeners=PLAINTEXT://<client-resolvable-host>:9092
+   kafkaAllowInsecureRemote=true
    ```
 
    The `brokerEntryMetadataInterceptors` entry is **required**: kpulse maps Kafka offsets onto
    Pulsar's broker-entry index, and refuses to start without it rather than silently corrupt
    consumer positions.
+
+   **Security warning:** M1 has no Kafka authentication or Pulsar authorization. Remote binding is
+   rejected by default; `kafkaAllowInsecureRemote=true` is an explicit opt-in intended only for an
+   isolated, trusted network. Do not expose port 9092 to the public internet.
+
+   M1 is limited to a single broker owning the namespace's topics. It does not yet resolve Pulsar
+   bundle ownership or advertise remote owners, so do not deploy it as a multi-broker Kafka endpoint.
+
+### Upgrading topics created before the M1 format marker
+
+Current kpulse releases mark each backing Pulsar topic with
+`kpulse.entry.format=kafka`. Topics created by an earlier kpulse build can still be migrated
+automatically when a client requests them by name, but Kafka pattern subscriptions and
+`listTopics()` cannot discover an unmarked topic after a cold restart.
+
+Before upgrading, explicitly mark every existing topic that was written exclusively through
+kpulse. Do not run this on a native or mixed-format Pulsar topic:
+
+```bash
+pulsar-admin topics update-properties \
+  --property kpulse.entry.format=kafka \
+  persistent://public/default/<existing-kpulse-topic>
+
+pulsar-admin topics get-properties \
+  persistent://public/default/<existing-kpulse-topic>
+```
+
+Repeat the command for each existing kpulse topic before clients use pattern discovery. Named
+Produce, Fetch, Metadata, or ListOffsets access remains a fallback that validates the first legacy
+entry before adding the marker.
 
 ## Module layout
 

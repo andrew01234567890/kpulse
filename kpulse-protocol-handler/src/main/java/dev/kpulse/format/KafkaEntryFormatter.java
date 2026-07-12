@@ -6,8 +6,9 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import org.apache.bookkeeper.mledger.Entry;
+import org.apache.kafka.common.InvalidRecordException;
 import org.apache.kafka.common.record.internal.MemoryRecords;
-import org.apache.kafka.common.record.internal.Records;
+import org.apache.kafka.common.record.internal.MutableRecordBatch;
 import org.apache.pulsar.common.api.proto.MessageMetadata;
 import org.apache.pulsar.common.protocol.Commands;
 
@@ -16,7 +17,7 @@ import org.apache.pulsar.common.protocol.Commands;
  * Pulsar entry payload, wrapped in one Pulsar {@link MessageMetadata} tagged {@code entry.format=kafka}.
  *
  * <p>Encoding is a wrap (no re-serialization); decoding is a byte copy plus an 8-byte base-offset
- * patch. Patching the batch's {@code baseOffset} (bytes 0-7) is safe because the v2 record-batch CRC
+ * patch per record batch. Patching each {@code baseOffset} (bytes 0-7) is safe because the v2 batch CRC
  * covers only bytes from {@code attributes} (offset 21) onward — the base offset is outside CRC
  * coverage, so rewriting it leaves the batch valid.
  */
@@ -27,10 +28,16 @@ public final class KafkaEntryFormatter {
 
     /** Wrap a Kafka batch as a Pulsar entry payload. {@code numMessages} drives the broker index increment. */
     public ByteBuf encode(MemoryRecords records, int numMessages) {
+        return encode(records, numMessages, "kpulse", 0L);
+    }
+
+    /** Wrap records with the publish identity Pulsar deduplication uses. */
+    public ByteBuf encode(MemoryRecords records, int numMessages, String producerName, long sequenceId) {
         MessageMetadata metadata = new MessageMetadata();
         metadata.addProperty().setKey(IDENTITY_KEY).setValue(IDENTITY_VALUE);
-        metadata.setProducerName("");
-        metadata.setSequenceId(0L);
+        metadata.setProducerName(producerName);
+        metadata.setSequenceId(sequenceId);
+        metadata.setHighestSequenceId(sequenceId + numMessages - 1L);
         metadata.setPublishTime(System.currentTimeMillis());
         metadata.setNumMessagesInBatch(numMessages);
 
@@ -58,11 +65,16 @@ public final class KafkaEntryFormatter {
             for (Entry entry : entries) {
                 long baseOffset = EntryMetadataUtils.peekBaseOffset(entry);
                 ByteBuf buf = entry.getDataBuffer();
-                Commands.parseMessageMetadata(buf);
+                MessageMetadata metadata = Commands.parseMessageMetadata(buf);
+                if (!hasKafkaFormatMarker(metadata)) {
+                    throw new InvalidRecordException(
+                        "Pulsar topic contains an entry not written in kpulse Kafka format");
+                }
+                int numberOfMessages = metadata.getNumMessagesInBatch();
 
                 byte[] batch = new byte[buf.readableBytes()];
                 buf.getBytes(buf.readerIndex(), batch);
-                ByteBuffer.wrap(batch).putLong(Records.OFFSET_OFFSET, baseOffset);
+                patchBatchOffsets(batch, baseOffset, numberOfMessages);
 
                 batches.add(batch);
                 totalSize += batch.length;
@@ -77,5 +89,34 @@ public final class KafkaEntryFormatter {
         } finally {
             entries.forEach(Entry::release);
         }
+    }
+
+    private static void patchBatchOffsets(byte[] recordsBytes, long baseOffset, int numberOfMessages) {
+        MemoryRecords records = MemoryRecords.readableRecords(ByteBuffer.wrap(recordsBytes));
+        long nextOffset = baseOffset;
+        for (MutableRecordBatch batch : records.batches()) {
+            long batchSize = batch.lastOffset() - batch.baseOffset() + 1;
+            if (batchSize < 1 || batchSize > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("Invalid Kafka record-batch offset span: " + batchSize);
+            }
+            batch.setLastOffset(nextOffset + batchSize - 1);
+            nextOffset += batchSize;
+        }
+        if (nextOffset - baseOffset != numberOfMessages) {
+            throw new IllegalArgumentException(
+                "Kafka record count does not match Pulsar batch metadata: records="
+                    + (nextOffset - baseOffset) + ", metadata=" + numberOfMessages);
+        }
+    }
+
+    private static boolean hasKafkaFormatMarker(MessageMetadata metadata) {
+        return metadata.getPropertiesList().stream().anyMatch(property ->
+            IDENTITY_KEY.equals(property.getKey()) && IDENTITY_VALUE.equals(property.getValue()));
+    }
+
+    /** Return whether an entry carries kpulse's Kafka payload marker without consuming the buffer. */
+    public static boolean isKafkaFormattedEntry(ByteBuf entry) {
+        MessageMetadata metadata = Commands.peekMessageMetadata(entry, "kpulse-format-check", -1L);
+        return metadata != null && hasKafkaFormatMarker(metadata);
     }
 }

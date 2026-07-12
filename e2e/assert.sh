@@ -35,6 +35,16 @@ if [ "${ready}" != true ]; then
 fi
 echo "OK: kpulse initialized and bound the Kafka protocol listener"
 
+# Pulsar standalone logs the selected metadata URL before it initializes BookKeeper. Requiring this
+# line prevents the e2e test from passing if the broker silently falls back to its local metadata
+# store while a separate, unused Oxia pod happens to be healthy.
+if ! grep -qF "Starting BK with metadata store {metadataStoreUrl=oxia://oxia:6648}" "${log_file}"; then
+  echo "FAIL: Pulsar did not initialize BookKeeper with the Oxia metadata store"
+  kubectl logs "${POD}" --tail=200 || true
+  exit 1
+fi
+echo "OK: Pulsar initialized BookKeeper with Oxia at oxia://oxia:6648"
+
 echo "Checking the Kafka listener accepts connections on 9092..."
 port_open=false
 for _ in $(seq 1 30); do

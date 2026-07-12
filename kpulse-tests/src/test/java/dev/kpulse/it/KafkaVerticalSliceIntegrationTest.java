@@ -1,11 +1,24 @@
 package dev.kpulse.it;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.kpulse.format.KafkaEntryFormatter;
+import dev.kpulse.storage.KafkaTopicManager;
+import dev.kpulse.storage.PartitionLog;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -16,6 +29,18 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.clients.consumer.OffsetOutOfRangeException;
+import org.apache.kafka.common.compress.Compression;
+import org.apache.kafka.common.message.FetchRequestData;
+import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.protocol.ByteBufferAccessor;
+import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.record.internal.MemoryRecords;
+import org.apache.kafka.common.record.internal.SimpleRecord;
+import org.apache.kafka.common.requests.FetchRequest;
+import org.apache.kafka.common.requests.FetchResponse;
+import org.apache.kafka.common.requests.RequestHeader;
+import org.apache.kafka.common.requests.ResponseHeader;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
@@ -54,6 +79,11 @@ class KafkaVerticalSliceIntegrationTest {
 
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProperties())) {
             TopicPartition partition = new TopicPartition(TOPIC, 0);
+            cluster.pulsar().getAdminClient().topics()
+                .createNonPartitionedTopic("persistent://public/default/native-pulsar-topic");
+            assertThat(consumer.listTopics(Duration.ofSeconds(10)))
+                .containsKey(TOPIC)
+                .doesNotContainKey("native-pulsar-topic");
             consumer.assign(List.of(partition));
 
             assertThat(consumer.beginningOffsets(List.of(partition)).get(partition)).isEqualTo(0L);
@@ -82,6 +112,132 @@ class KafkaVerticalSliceIntegrationTest {
         assertThat(topic.getManagedLedger().getNumberOfEntries()).isPositive();
     }
 
+    @Test
+    void rejectsFetchOffsetsBeyondTheLogEnd() throws Exception {
+        produce();
+        Properties properties = consumerProperties();
+        properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "none");
+
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(properties)) {
+            TopicPartition partition = new TopicPartition(TOPIC, 0);
+            consumer.assign(List.of(partition));
+            consumer.seek(partition, RECORD_COUNT + 1L);
+
+            assertThatThrownBy(() -> consumer.poll(Duration.ofSeconds(5)))
+                .isInstanceOf(OffsetOutOfRangeException.class);
+        }
+    }
+
+    @Test
+    void reportsMissingTopicAfterEarlierFetchExhaustsTheByteBudget() throws Exception {
+        produce();
+        FetchResponse response = rawFetch(
+            fetchTopic(TOPIC), fetchTopic("missing-after-budget"));
+
+        assertThat(response.data().responses()).hasSize(2);
+        var first = response.data().responses().get(0).partitions().get(0);
+        assertThat(first.errorCode())
+            .isEqualTo(Errors.NONE.code());
+        assertThat(first.records().sizeInBytes()).isGreaterThan(1);
+        assertThat(response.data().responses().get(1).partitions().get(0).errorCode())
+            .isEqualTo(Errors.UNKNOWN_TOPIC_OR_PARTITION.code());
+    }
+
+    @Test
+    void reportsOutOfRangeOffsetAfterEarlierFetchExhaustsTheByteBudget() throws Exception {
+        produce();
+        String laterTopic = "later-offset-check";
+        produceOne(laterTopic);
+
+        FetchResponse response = rawFetch(
+            fetchTopic(TOPIC), fetchTopic(laterTopic, 2L));
+
+        assertThat(response.data().responses()).hasSize(2);
+        var first = response.data().responses().get(0).partitions().get(0);
+        assertThat(first.errorCode()).isEqualTo(Errors.NONE.code());
+        assertThat(first.records().sizeInBytes()).isGreaterThan(1);
+        assertThat(response.data().responses().get(1).partitions().get(0).errorCode())
+            .isEqualTo(Errors.OFFSET_OUT_OF_RANGE.code());
+    }
+
+    @Test
+    void producesSequentiallyWhenPulsarDeduplicationIsEnabled() throws Exception {
+        cluster.close();
+        cluster = new EmbeddedPulsarKafka(true);
+
+        assertThat(produce()).containsExactly(0L, 1L, 2L, 3L, 4L);
+    }
+
+    @Test
+    void concurrentProducersRemainOrderedWhenPulsarDeduplicationIsEnabled() throws Exception {
+        cluster.close();
+        cluster = new EmbeddedPulsarKafka(true);
+        int producers = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(producers);
+        try {
+            List<Future<Long>> futures = new ArrayList<>();
+            for (int i = 0; i < producers; i++) {
+                int record = i;
+                futures.add(executor.submit(() -> {
+                    try (KafkaProducer<String, String> producer = new KafkaProducer<>(producerProperties())) {
+                        return producer.send(new ProducerRecord<>(TOPIC, "ck" + record, "cv" + record))
+                            .get(20, TimeUnit.SECONDS).offset();
+                    }
+                }));
+            }
+            List<Long> offsets = new ArrayList<>();
+            for (Future<Long> future : futures) {
+                offsets.add(future.get(30, TimeUnit.SECONDS));
+            }
+            Collections.sort(offsets);
+            assertThat(offsets).containsExactly(0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void migratesLegacyKafkaTopicFromEntryMarkerWithoutAdoptingNativeTopics() throws Exception {
+        String legacyTopicName = "legacy-kpulse-topic";
+        String pulsarTopicName = "persistent://public/default/" + legacyTopicName;
+        PersistentTopic legacyTopic = (PersistentTopic) cluster.pulsar().getBrokerService()
+            .getTopic(pulsarTopicName, true).get(10, TimeUnit.SECONDS).orElseThrow();
+        MemoryRecords legacyRecords = MemoryRecords.withRecords(
+            Compression.NONE, new SimpleRecord("legacy-value".getBytes(UTF_8)));
+        new PartitionLog(legacyTopic, new KafkaEntryFormatter())
+            .appendRecords(legacyRecords).get(10, TimeUnit.SECONDS);
+
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProperties())) {
+            TopicPartition partition = new TopicPartition(legacyTopicName, 0);
+            consumer.assign(List.of(partition));
+            consumer.seekToBeginning(List.of(partition));
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(10));
+
+            assertThat(records.records(partition))
+                .extracting(ConsumerRecord::value)
+                .containsExactly("legacy-value");
+            assertThat(consumer.listTopics(Duration.ofSeconds(10))).containsKey(legacyTopicName);
+        }
+    }
+
+    @Test
+    void discoversAdministrativelyMarkedLegacyTopicBeforeNamedAccess() throws Exception {
+        String legacyTopicName = "cold-legacy-kpulse-topic";
+        String pulsarTopicName = "persistent://public/default/" + legacyTopicName;
+        PersistentTopic legacyTopic = (PersistentTopic) cluster.pulsar().getBrokerService()
+            .getTopic(pulsarTopicName, true).get(10, TimeUnit.SECONDS).orElseThrow();
+        MemoryRecords legacyRecords = MemoryRecords.withRecords(
+            Compression.NONE, new SimpleRecord("cold-legacy-value".getBytes(UTF_8)));
+        new PartitionLog(legacyTopic, new KafkaEntryFormatter())
+            .appendRecords(legacyRecords).get(10, TimeUnit.SECONDS);
+        cluster.pulsar().getAdminClient().topics()
+            .updateProperties(pulsarTopicName, KafkaTopicManager.kafkaTopicProperties());
+
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProperties())) {
+            assertThat(consumer.listTopics(Duration.ofSeconds(10))).containsKey(legacyTopicName);
+        }
+    }
+
     private List<Long> produce() throws Exception {
         List<Long> offsets = new ArrayList<>();
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(producerProperties())) {
@@ -93,6 +249,53 @@ class KafkaVerticalSliceIntegrationTest {
             }
         }
         return offsets;
+    }
+
+    private void produceOne(String topic) throws Exception {
+        try (KafkaProducer<String, String> producer = new KafkaProducer<>(producerProperties())) {
+            producer.send(new ProducerRecord<>(topic, "key", "value"))
+                .get(20, TimeUnit.SECONDS);
+        }
+    }
+
+    private static FetchRequestData.FetchTopic fetchTopic(String topic) {
+        return fetchTopic(topic, 0L);
+    }
+
+    private static FetchRequestData.FetchTopic fetchTopic(String topic, long fetchOffset) {
+        return new FetchRequestData.FetchTopic()
+            .setTopic(topic)
+            .setPartitions(List.of(new FetchRequestData.FetchPartition()
+                .setPartition(0)
+                .setFetchOffset(fetchOffset)
+                .setPartitionMaxBytes(1024 * 1024)));
+    }
+
+    private FetchResponse rawFetch(FetchRequestData.FetchTopic... topics) throws Exception {
+        short version = 12;
+        FetchRequestData requestData = new FetchRequestData()
+            .setReplicaId(FetchRequest.CONSUMER_REPLICA_ID)
+            .setMaxWaitMs(0)
+            .setMinBytes(0)
+            .setMaxBytes(1)
+            .setTopics(List.of(topics));
+        FetchRequest request = new FetchRequest(requestData, version);
+        RequestHeader header = new RequestHeader(ApiKeys.FETCH, version, "kpulse-test", 42);
+        ByteBuffer serialized = request.serializeWithHeader(header);
+
+        try (Socket socket = new Socket("127.0.0.1", cluster.kafkaPort());
+             DataOutputStream output = new DataOutputStream(socket.getOutputStream());
+             DataInputStream input = new DataInputStream(socket.getInputStream())) {
+            socket.setSoTimeout(20_000);
+            output.writeInt(serialized.remaining());
+            output.write(serialized.array(), serialized.arrayOffset() + serialized.position(), serialized.remaining());
+            output.flush();
+
+            int responseSize = input.readInt();
+            ByteBuffer responseBuffer = ByteBuffer.wrap(input.readNBytes(responseSize));
+            ResponseHeader.parse(responseBuffer, ApiKeys.FETCH.responseHeaderVersion(version));
+            return FetchResponse.parse(new ByteBufferAccessor(responseBuffer), version);
+        }
     }
 
     private Properties producerProperties() {

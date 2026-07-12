@@ -81,6 +81,9 @@ jobs:
   kind-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      OXIA_IMAGE_SOURCE: oxia/oxia@sha256:ae01c97d1e3e686e66656ad4ef71cf9ec2cb834eec250e5598eb729bc30e43fc # v0.16.7 linux/amd64
+      OXIA_IMAGE: oxia/oxia:0.16.7-kpulse
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: ./.github/actions/setup-java-gradle
@@ -91,17 +94,23 @@ jobs:
           cp kpulse-protocol-handler/build/libs/kpulse-protocol-handler-*.nar e2e/kpulse.nar
           cp -r e2e-client/build/install/e2e-client e2e/e2e-client
       - name: Build the broker image with kpulse
-        run: docker build -t kpulse-broker:e2e e2e
+        run: docker build --provenance=false -t kpulse-broker:e2e e2e
       - name: Create KIND cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
         with:
           cluster_name: kpulse-e2e
-      - name: Load the broker image into KIND
-        run: kind load docker-image kpulse-broker:e2e --name kpulse-e2e
-      - name: Deploy Pulsar standalone with kpulse
+      - name: Load the broker and Oxia images into KIND
+        run: |
+          docker pull "${OXIA_IMAGE_SOURCE}"
+          docker tag "${OXIA_IMAGE_SOURCE}" "${OXIA_IMAGE}"
+          kind load docker-image kpulse-broker:e2e --name kpulse-e2e
+          kind load docker-image "${OXIA_IMAGE}" --name kpulse-e2e
+      - name: Deploy Oxia and Pulsar standalone with kpulse
         run: kubectl apply -f e2e/pulsar-standalone.yaml
-      - name: Wait for broker readiness
-        run: kubectl rollout status deployment/pulsar-kpulse --timeout=300s
+      - name: Wait for Oxia and broker readiness
+        run: |
+          kubectl rollout status deployment/oxia --timeout=120s
+          kubectl rollout status deployment/pulsar-kpulse --timeout=300s
       - name: Assert real Kafka produce/consume round-trip, cross-checked via pulsar-admin
         run: bash e2e/assert.sh
       - name: Collect broker diagnostics on failure
@@ -109,6 +118,8 @@ jobs:
         run: |
           kubectl describe deployment/pulsar-kpulse || true
           kubectl logs deployment/pulsar-kpulse --tail=400 || true
+          kubectl describe deployment/oxia || true
+          kubectl logs deployment/oxia --tail=400 || true
 
   # Release: main only, after all tests pass, one release at a time.
   release:

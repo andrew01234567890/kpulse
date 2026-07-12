@@ -17,6 +17,12 @@ public final class KafkaListenerEndpoint {
     public KafkaListenerEndpoint(String securityProtocol, String host, int port) {
         this.securityProtocol = Objects.requireNonNull(securityProtocol, "securityProtocol");
         this.host = Objects.requireNonNull(host, "host");
+        if (securityProtocol.isBlank()) {
+            throw new IllegalArgumentException("securityProtocol must not be blank");
+        }
+        if (port < 1 || port > 65535) {
+            throw new IllegalArgumentException("port must be between 1 and 65535, got " + port);
+        }
         this.port = port;
     }
 
@@ -55,6 +61,7 @@ public final class KafkaListenerEndpoint {
 
     /** Parse a single {@code PROTOCOL://host:port} listener. */
     public static KafkaListenerEndpoint parse(String listener) {
+        Objects.requireNonNull(listener, "listener");
         int sep = listener.indexOf("://");
         if (sep < 0) {
             throw new IllegalArgumentException(

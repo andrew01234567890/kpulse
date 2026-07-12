@@ -28,19 +28,39 @@ public final class MessagePublishContext implements Topic.PublishContext {
     private int numberOfMessages;
     private long baseOffset;
     private ByteBuf payload;
+    private String producerName;
+    private long sequenceId;
 
     private MessagePublishContext(Recycler.Handle<MessagePublishContext> handle) {
         this.handle = handle;
     }
 
     public static MessagePublishContext get(
-            CompletableFuture<Long> offsetFuture, int numberOfMessages, ByteBuf payload) {
+            CompletableFuture<Long> offsetFuture, int numberOfMessages, ByteBuf payload,
+            String producerName, long sequenceId) {
         MessagePublishContext context = RECYCLER.get();
         context.offsetFuture = offsetFuture;
         context.numberOfMessages = numberOfMessages;
         context.baseOffset = -1L;
         context.payload = payload;
+        context.producerName = producerName;
+        context.sequenceId = sequenceId;
         return context;
+    }
+
+    @Override
+    public String getProducerName() {
+        return producerName;
+    }
+
+    @Override
+    public long getSequenceId() {
+        return sequenceId;
+    }
+
+    @Override
+    public long getHighestSequenceId() {
+        return sequenceId + numberOfMessages - 1L;
     }
 
     @Override
@@ -74,6 +94,8 @@ public final class MessagePublishContext implements Topic.PublishContext {
         this.numberOfMessages = 0;
         this.baseOffset = -1L;
         this.payload = null;
+        this.producerName = null;
+        this.sequenceId = -1L;
         handle.recycle(this);
     }
 }

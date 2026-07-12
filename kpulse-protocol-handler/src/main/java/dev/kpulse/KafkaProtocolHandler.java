@@ -49,6 +49,9 @@ public class KafkaProtocolHandler implements ProtocolHandler {
         log.info("Initialized kpulse: listeners={}, advertised={}, tenant={}, namespace={}",
             config.getKafkaListeners(), config.getKafkaAdvertisedListeners(),
             config.getKafkaTenant(), config.getKafkaNamespace());
+        if (config.isAllowInsecureRemote()) {
+            log.warn("kpulse remote PLAINTEXT access is explicitly enabled without authentication or authorization");
+        }
     }
 
     @Override

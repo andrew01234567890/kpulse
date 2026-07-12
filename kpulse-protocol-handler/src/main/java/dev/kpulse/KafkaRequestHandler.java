@@ -4,7 +4,9 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import java.util.ArrayDeque;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.requests.AbstractResponse;
@@ -25,9 +27,13 @@ import org.slf4j.LoggerFactory;
 public class KafkaRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaRequestHandler.class);
+    private static final int MAX_IN_FLIGHT_REQUESTS = 8;
+    private static final int MAX_PENDING_RESPONSES = 8;
+    private static final long REQUEST_TIMEOUT_SECONDS = 60L;
 
     private final Function<KafkaHeaderAndRequest, CompletableFuture<AbstractResponse>> dispatch;
     private final ArrayDeque<PendingResponse> queue = new ArrayDeque<>();
+    private int inFlightRequests;
 
     public KafkaRequestHandler(KafkaRequestContext context) {
         this(new KafkaApis(context)::handle);
@@ -48,6 +54,12 @@ public class KafkaRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, ByteBuf frame) {
+        if (inFlightRequests >= MAX_IN_FLIGHT_REQUESTS || queue.size() >= MAX_PENDING_RESPONSES) {
+            log.warn("Closing Kafka connection {}: request or ordered-response limit reached",
+                ctx.channel().remoteAddress());
+            ctx.close();
+            return;
+        }
         if (isUnsupportedApiVersions(frame)) {
             writeApiVersionsBootstrap(ctx, frame);
             return;
@@ -62,20 +74,51 @@ public class KafkaRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             return;
         }
 
+        inFlightRequests++;
+        CompletableFuture<AbstractResponse> responseFuture = dispatchSafely(request)
+            .orTimeout(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         if (!KafkaApis.expectsResponse(request)) {
-            dispatch.apply(request).whenComplete((response, error) -> request.release());
+            responseFuture.whenComplete((response, error) -> {
+                request.release();
+                ctx.executor().execute(() -> inFlightRequests--);
+            });
             return;
         }
 
         PendingResponse slot = new PendingResponse(request.header());
         queue.addLast(slot);
-        dispatch.apply(request).whenComplete((response, error) -> ctx.executor().execute(() -> {
-            slot.response = (error == null)
-                ? response
-                : request.request().getErrorResponse(error);
+        responseFuture.whenComplete((response, error) -> {
+            AbstractResponse completedResponse;
+            try {
+                completedResponse = (error == null)
+                    ? Objects.requireNonNull(response, "dispatch completed with a null response")
+                    : request.request().getErrorResponse(error);
+            } catch (RuntimeException responseError) {
+                request.release();
+                ctx.executor().execute(() -> {
+                    inFlightRequests--;
+                    ctx.fireExceptionCaught(responseError);
+                });
+                return;
+            }
             request.release();
-            flushReady(ctx);
-        }));
+            ctx.executor().execute(() -> {
+                inFlightRequests--;
+                slot.response = completedResponse;
+                flushReady(ctx);
+            });
+        });
+    }
+
+    private CompletableFuture<AbstractResponse> dispatchSafely(KafkaHeaderAndRequest request) {
+        try {
+            return Objects.requireNonNull(dispatch.apply(request), "dispatch returned null");
+        } catch (RuntimeException error) {
+            return CompletableFuture.failedFuture(error);
+        } catch (Error error) {
+            request.release();
+            throw error;
+        }
     }
 
     private void flushReady(ChannelHandlerContext ctx) {

@@ -51,12 +51,16 @@ final class EmbeddedPulsarKafka implements AutoCloseable {
     private final Channel serverChannel;
 
     EmbeddedPulsarKafka() throws Exception {
+        this(false);
+    }
+
+    EmbeddedPulsarKafka(boolean deduplicationEnabled) throws Exception {
         this.kafkaPort = freePort();
         this.bookKeeperExecutor = OrderedScheduler.newSchedulerBuilder()
             .numThreads(1).name("kpulse-mock-bk").build();
         this.mockBookKeeper = new PulsarMockBookKeeper(bookKeeperExecutor);
 
-        ServiceConfiguration config = brokerConfig(kafkaPort);
+        ServiceConfiguration config = brokerConfig(kafkaPort, deduplicationEnabled);
         this.pulsar = startBroker(config, mockBookKeeper);
         bootstrapClusterMetadata(pulsar);
 
@@ -82,11 +86,15 @@ final class EmbeddedPulsarKafka implements AutoCloseable {
         return "127.0.0.1:" + kafkaPort;
     }
 
+    int kafkaPort() {
+        return kafkaPort;
+    }
+
     PulsarService pulsar() {
         return pulsar;
     }
 
-    private static ServiceConfiguration brokerConfig(int kafkaPort) {
+    private static ServiceConfiguration brokerConfig(int kafkaPort, boolean deduplicationEnabled) {
         ServiceConfiguration config = new ServiceConfiguration();
         config.setClusterName(CLUSTER);
         config.setAdvertisedAddress("127.0.0.1");
@@ -101,6 +109,7 @@ final class EmbeddedPulsarKafka implements AutoCloseable {
         config.setManagedLedgerDefaultWriteQuorum(1);
         config.setManagedLedgerDefaultAckQuorum(1);
         config.setBrokerEntryMetadataInterceptors(Set.of(INTERCEPTOR));
+        config.setBrokerDeduplicationEnabled(deduplicationEnabled);
         config.setAllowAutoTopicCreation(true);
         // One bundle per namespace so this single broker owns the whole key range up front; otherwise
         // getOrCreateTopic can hit a bundle this broker has not yet acquired ("please redo the lookup").
