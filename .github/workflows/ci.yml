@@ -23,7 +23,7 @@ jobs:
     outputs:
       next: ${{ steps.compute.outputs.next }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: compute
@@ -65,7 +65,7 @@ jobs:
   build-unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-java-gradle
       - name: Build, unit + integration tests
         run: ./gradlew build --console=plain --stacktrace
@@ -85,7 +85,7 @@ jobs:
       OXIA_IMAGE_SOURCE: oxia/oxia@sha256:ae01c97d1e3e686e66656ad4ef71cf9ec2cb834eec250e5598eb729bc30e43fc # v0.16.7 linux/amd64
       OXIA_IMAGE: oxia/oxia:0.16.7-kpulse
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-java-gradle
       - name: Build the kpulse NAR and e2e Kafka client
         run: ./gradlew :kpulse-protocol-handler:nar :e2e-client:installDist --console=plain
