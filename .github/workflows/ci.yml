@@ -71,7 +71,7 @@ jobs:
         run: ./gradlew build --console=plain --stacktrace
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-reports
           path: '**/build/reports/tests/**'
@@ -96,7 +96,7 @@ jobs:
       - name: Build the broker image with kpulse
         run: docker build --provenance=false -t kpulse-broker:e2e e2e
       - name: Create KIND cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           cluster_name: kpulse-e2e
       - name: Load the broker and Oxia images into KIND
