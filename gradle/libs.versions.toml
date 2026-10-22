@@ -1,6 +1,6 @@
 [versions]
-pulsar = "5.0.0-M2"
-kafka = "4.3.1"
+pulsar = "5.0.0"
+kafka = "4.3.2"
 slf4j = "2.0.20"
 junit = "6.1.3"
 assertj = "3.27.7"
